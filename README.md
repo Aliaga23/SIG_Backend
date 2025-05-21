@@ -1,7 +1,7 @@
 
 # API de Distribución de Zapatos
 
-Este backend ha sido desarrollado con FastAPI para gestionar un sistema de distribución de zapatos. Implementa una arquitectura modular con rutas separadas por entidad y conexión a base de datos mediante SQLAlchemy.
+Este backend se desarrollo con FastAPI para gestionar un sistema de distribución de zapatos. Implementa una arquitectura modular con rutas separadas por entidad y conexión a base de datos mediante SQLAlchemy.
 
 ## Tecnologías utilizadas
 
