@@ -107,7 +107,7 @@ Los endpoints están organizados por entidades. A continuación, se enumeran las
 1. Clona el repositorio:
 
 ```bash
-git clone https://github.com/tu-usuario/SIG_Backend-main.git
+git clone https://github.com/Aliaga23/SIG_Backend-main.git
 cd SIG_Backend-main
 ```
 
