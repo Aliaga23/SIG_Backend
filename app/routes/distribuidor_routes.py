@@ -13,7 +13,6 @@ router = APIRouter(
     tags=["Distribuidores"]
 )
 
-# Dependencia para obtener la sesión de BD
 def get_db():
     db = SessionLocal()
     try:
@@ -48,6 +47,23 @@ def cambiar_estado_distribuidor(id: UUID, activo: bool, db: Session = Depends(ge
     distribuidor = distribuidor_service.cambiar_estado_distribuidor(db, id, activo)
     if not distribuidor:
         raise HTTPException(status_code=404, detail="Distribuidor no encontrado")
+    return distribuidor
+
+@router.patch("/{id}/ubicacion")
+def actualizar_ubicacion_distribuidor(
+    id: UUID, 
+    latitud: float,
+    longitud: float,
+    db: Session = Depends(get_db)
+):
+    distribuidor = distribuidor_service.obtener_distribuidor(db, id)
+    if not distribuidor:
+        raise HTTPException(status_code=404, detail="Distribuidor no encontrado")
+    
+    distribuidor.latitud = latitud
+    distribuidor.longitud = longitud
+    db.commit()
+    db.refresh(distribuidor)
     return distribuidor
 
 @router.delete("/{id}")

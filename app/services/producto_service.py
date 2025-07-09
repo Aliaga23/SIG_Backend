@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from app.models.producto_model import Producto
 from app.schemas.producto_schema import ProductoCreate, ProductoUpdate
+from app.models.pedido_model import DetallePedido   # ⬅️ al inicio
 
 def crear_producto(db: Session, datos: ProductoCreate):
     nuevo = Producto(**datos.dict())
@@ -39,3 +40,32 @@ def eliminar_producto(db: Session, producto_id: UUID):
         db.delete(producto)
         db.commit()
     return producto
+
+def descontar_stock_por_pedido(db: Session, pedido_id: UUID):
+    """
+    Reduce el stock de los productos cuando se confirma un pedido
+    """
+    from app.models.pedido_model import DetallePedido, Pedido
+    
+    # Verificar si el pedido existe y está en estado aceptado
+    pedido = db.query(Pedido).filter(Pedido.id == pedido_id).first()
+    if not pedido or pedido.estado not in ["asignado", "en_entrega", "entregado"]:
+        return False
+    
+    # Obtener los detalles del pedido
+    detalles = db.query(DetallePedido).filter(DetallePedido.pedido_id == pedido_id).all()
+    
+    for detalle in detalles:
+        # Obtener el producto
+        producto = db.query(Producto).filter(Producto.id == detalle.producto_id).first()
+        if producto:
+            # Actualizar el stock
+            if producto.stock >= detalle.cantidad:
+                producto.stock -= detalle.cantidad
+                db.commit()
+            else:
+                # Si no hay suficiente stock, actualizar lo que se pueda
+                producto.stock = 0
+                db.commit()
+    
+    return True

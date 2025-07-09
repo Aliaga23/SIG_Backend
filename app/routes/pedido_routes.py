@@ -33,6 +33,14 @@ def obtener_pedido(id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Pedido no encontrado")
     return pedido
 
+@router.get("/{id}/detalles-completos")
+def obtener_pedido_detalles(id: UUID, db: Session = Depends(get_db)):
+    """Obtiene el pedido con detalles completos, incluyendo los precios de los productos"""
+    pedido = pedido_service.obtener_detalles_pedido_con_precios(db, id)
+    if not pedido:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    return pedido
+
 @router.patch("/{id}/estado", response_model=PedidoOut)
 def actualizar_estado(id: UUID, body: PedidoEstadoUpdate, db: Session = Depends(get_db)):
     pedido = pedido_service.actualizar_estado_pedido(db, id, body.estado)

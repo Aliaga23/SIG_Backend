@@ -14,9 +14,9 @@ class EntregaCreate(EntregaBase):
 
 class EntregaOut(EntregaBase):
     id_entrega: UUID
-    fecha_hora_entrega: datetime
+    fecha_hora_reg: datetime
     ruta_id: UUID
-    pedido_asignado_id: UUID
+    pedido_id: UUID
 
     class Config:
         from_attributes = True

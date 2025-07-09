@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean
+from sqlalchemy import Column, String, Boolean, Float
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from app.database import Base
@@ -14,4 +14,6 @@ class Distribuidor(Base):
     email = Column(String(100), unique=True, nullable=False)
     licencia = Column(String(50), nullable=False)
     password = Column(String(255), nullable=False)
+    latitud = Column(Float, nullable=True)
+    longitud = Column(Float, nullable=True)
     activo = Column(Boolean, default=True)

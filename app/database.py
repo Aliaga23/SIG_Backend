@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # URL de la base de datos
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:iYxwaMNAdNYCDfXDrhdDITwONpWRNPeR@tramway.proxy.rlwy.net:11127/railway")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Motor SQLAlchemy
 engine = create_engine(DATABASE_URL)

@@ -22,8 +22,8 @@ class DetallePedido(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cantidad = Column(Integer, nullable=False)
-    precio_unitario = Column(Numeric(10, 2), nullable=False)
     pedido_id = Column(UUID(as_uuid=True), ForeignKey("pedido.id", ondelete="CASCADE"))
     producto_id = Column(UUID(as_uuid=True), ForeignKey("producto.id", ondelete="SET NULL"))
 
     pedido = relationship("Pedido", back_populates="detalles")
+    producto = relationship("Producto")

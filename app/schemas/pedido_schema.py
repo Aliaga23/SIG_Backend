@@ -6,7 +6,6 @@ from datetime import datetime
 class DetallePedidoCreate(BaseModel):
     producto_id: UUID
     cantidad: int
-    precio_unitario: float
 
 class DetallePedidoOut(DetallePedidoCreate):
     id: UUID

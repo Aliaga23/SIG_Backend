@@ -1,4 +1,4 @@
-from sqlalchemy import Column, ForeignKey, TIMESTAMP
+from sqlalchemy import Column, ForeignKey, TIMESTAMP, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -12,8 +12,18 @@ class AsignacionEntrega(Base):
     fecha_asignacion = Column(TIMESTAMP, default=datetime.utcnow)
     id_distribuidor = Column(UUID(as_uuid=True), ForeignKey("distribuidor.id", ondelete="SET NULL"))
     ruta_id = Column(UUID(as_uuid=True), ForeignKey("ruta_entrega.ruta_id", ondelete="SET NULL"))
+    estado = Column(String(20), default="pendiente")  # pendiente, aceptada, rechazada
 
-    pedidos_asignados = relationship("PedidoAsignado", back_populates="asignacion", cascade="all, delete")
+    pedidos_asignados = relationship(
+        "PedidoAsignado",
+        back_populates="asignacion",
+        cascade="all, delete"
+    )
+    entregas = relationship(
+        "Entrega",
+        back_populates="asignacion",
+        cascade="all, delete-orphan"
+    )
 
 class PedidoAsignado(Base):
     __tablename__ = "pedido_asignado"

@@ -1,5 +1,6 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
+from typing import Optional
 
 class DistribuidorBase(BaseModel):
     nombre: str
@@ -8,12 +9,14 @@ class DistribuidorBase(BaseModel):
     telefono: str
     email: EmailStr
     licencia: str
+    latitud: Optional[float] = Field(default=None)
+    longitud: Optional[float] = Field(default=None)
 
 class DistribuidorCreate(DistribuidorBase):
-    password: str  # requerido para crear
+    password: str  
 
 class DistribuidorUpdate(DistribuidorBase):
-    password: str  # también se podrá actualizar si se desea
+    password: str  
 
 class DistribuidorOut(DistribuidorBase):
     id: UUID
