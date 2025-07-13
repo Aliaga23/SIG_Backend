@@ -5,6 +5,8 @@ from uuid import UUID
 from app.database import SessionLocal
 from app.schemas.cliente_schema import ClienteCreate, ClienteUpdate, ClienteOut
 from app.services import cliente_service
+from app.auth.dependencies import get_current_cliente
+from app.models.cliente_model import Cliente
 
 router = APIRouter(
     prefix="/clientes",
@@ -46,3 +48,11 @@ def eliminar_cliente(id: UUID, db: Session = Depends(get_db)):
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     return {"mensaje": "Cliente eliminado correctamente"}
+
+@router.get("/perfil", response_model=ClienteOut)
+def obtener_perfil_cliente(cliente_actual: Cliente = Depends(get_current_cliente)):
+    """
+    Endpoint protegido que requiere autenticación Bearer.
+    Retorna el perfil del cliente autenticado.
+    """
+    return cliente_actual

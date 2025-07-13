@@ -1,10 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPBearer
 from uuid import UUID
 from sqlalchemy.orm import Session
+from geopy.distance import geodesic
 from app.database import SessionLocal
 from app.schemas.entrega_schema import EntregaUpdate
-from app.schemas.ruta_entrega_schema import EntregaOut
+from app.schemas.ruta_entrega_schema import EntregaOut, AsignacionEntregaOut
 from app.services.entregas_service import completar_entrega
+from app.auth.dependencies import get_current_distribuidor
+from app.models.distribuidor_model import Distribuidor
+from app.models.asignacion_model import AsignacionEntrega, PedidoAsignado
+from app.models.ruta_entrega_model import RutaEntrega, Entrega
+from app.models.pedido_model import Pedido, DetallePedido
+from app.models.cliente_model import Cliente
+from app.models.vehiculo_model import Vehiculo
+from app.models.asignacion_vehiculo_model import AsignacionVehiculo
+from app.models.tienda_model import Tienda
+
+security = HTTPBearer()
 
 router = APIRouter(prefix="/entregas", tags=["Entregas"])
 def get_db():
@@ -20,3 +33,578 @@ def patch_entrega(entrega_id: UUID, payload: EntregaUpdate, db: Session = Depend
     if not ent:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Entrega no encontrada")
     return ent
+
+@router.get("/mis-entregas", response_model=list[AsignacionEntregaOut], dependencies=[Depends(security)])
+def obtener_mis_entregas(
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene todas las asignaciones de entregas del distribuidor autenticado
+    con el orden de las entregas y toda la información necesaria.
+    """
+    # Buscar todas las asignaciones del distribuidor actual
+    asignaciones = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id
+    ).all()
+    
+    if not asignaciones:
+        return []
+    
+    # Para cada asignación, obtenemos la ruta y las entregas ordenadas
+    resultado = []
+    for asignacion in asignaciones:
+        # Obtener la ruta asociada
+        ruta = db.query(RutaEntrega).filter(
+            RutaEntrega.ruta_id == asignacion.ruta_id
+        ).first()
+        
+        if ruta:
+            # Obtener las entregas ordenadas por orden_entrega
+            entregas_ordenadas = db.query(Entrega).filter(
+                Entrega.asignacion_id == asignacion.id
+            ).order_by(Entrega.orden_entrega).all()
+            
+            # Construir el objeto de respuesta
+            asignacion_data = {
+                "id": asignacion.id,
+                "fecha_asignacion": asignacion.fecha_asignacion,
+                "estado": asignacion.estado,
+                "ruta": {
+                    "ruta_id": ruta.ruta_id,
+                    "coordenadas_inicio": ruta.coordenadas_inicio,
+                    "coordenadas_fin": ruta.coordenadas_fin,
+                    "distancia": float(ruta.distancia) if ruta.distancia else None,
+                    "tiempo_estimado": ruta.tiempo_estimado,
+                    "entregas": [
+                        {
+                            "id_entrega": entrega.id_entrega,
+                            "fecha_hora_reg": entrega.fecha_hora_reg,
+                            "coordenadas_fin": entrega.coordenadas_fin,
+                            "estado": entrega.estado,
+                            "observaciones": entrega.observaciones,
+                            "orden_entrega": entrega.orden_entrega,
+                            "cliente": entrega.cliente,
+                            "pedido": entrega.pedido
+                        }
+                        for entrega in entregas_ordenadas
+                    ]
+                }
+            }
+            resultado.append(asignacion_data)
+    
+    return resultado
+
+@router.get("/mis-entregas-hoy", response_model=list[AsignacionEntregaOut], dependencies=[Depends(security)])
+def obtener_mis_entregas_hoy(
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene las asignaciones de entregas del distribuidor autenticado para el día de hoy
+    con el orden de las entregas y toda la información necesaria.
+    """
+    from datetime import date
+    
+    # Buscar asignaciones del distribuidor actual de hoy
+    hoy = date.today()
+    asignaciones = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
+        AsignacionEntrega.fecha_asignacion >= hoy
+    ).all()
+    
+    if not asignaciones:
+        return []
+    
+    # Para cada asignación, obtenemos la ruta y las entregas ordenadas
+    resultado = []
+    for asignacion in asignaciones:
+        # Obtener la ruta asociada
+        ruta = db.query(RutaEntrega).filter(
+            RutaEntrega.ruta_id == asignacion.ruta_id
+        ).first()
+        
+        if ruta:
+            # Obtener las entregas ordenadas por orden_entrega
+            entregas_ordenadas = db.query(Entrega).filter(
+                Entrega.asignacion_id == asignacion.id
+            ).order_by(Entrega.orden_entrega).all()
+            
+            # Construir el objeto de respuesta
+            asignacion_data = {
+                "id": asignacion.id,
+                "fecha_asignacion": asignacion.fecha_asignacion,
+                "estado": asignacion.estado,
+                "ruta": {
+                    "ruta_id": ruta.ruta_id,
+                    "coordenadas_inicio": ruta.coordenadas_inicio,
+                    "coordenadas_fin": ruta.coordenadas_fin,
+                    "distancia": float(ruta.distancia) if ruta.distancia else None,
+                    "tiempo_estimado": ruta.tiempo_estimado,
+                    "entregas": [
+                        {
+                            "id_entrega": entrega.id_entrega,
+                            "fecha_hora_reg": entrega.fecha_hora_reg,
+                            "coordenadas_fin": entrega.coordenadas_fin,
+                            "estado": entrega.estado,
+                            "observaciones": entrega.observaciones,
+                            "orden_entrega": entrega.orden_entrega,
+                            "cliente": entrega.cliente,
+                            "pedido": entrega.pedido
+                        }
+                        for entrega in entregas_ordenadas
+                    ]
+                }
+            }
+            resultado.append(asignacion_data)
+    
+    return resultado
+
+@router.patch("/asignacion/{asignacion_id}/aceptar", dependencies=[Depends(security)])
+def aceptar_asignacion(
+    asignacion_id: UUID,
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Permite al distribuidor autenticado aceptar una asignación de entregas.
+    - Rechaza automáticamente la misma asignación para otros distribuidores
+    - Verifica la capacidad del vehículo del distribuidor
+    - Crea nuevas asignaciones si excede la capacidad
+    """
+    from app.models.asignacion_vehiculo_model import AsignacionVehiculo
+    from app.models.vehiculo_model import Vehiculo
+    from app.models.pedido_model import Pedido, DetallePedido
+    
+    # Buscar la asignación
+    asignacion = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id == asignacion_id,
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id
+    ).first()
+    
+    if not asignacion:
+        raise HTTPException(
+            status_code=404, 
+            detail="Asignación no encontrada o no pertenece a este distribuidor"
+        )
+    
+    # Verificar que esté en estado pendiente
+    if asignacion.estado != "pendiente":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"La asignación ya está en estado: {asignacion.estado}"
+        )
+    
+    # Obtener el vehículo del distribuidor
+    vehiculo_asignado = db.query(AsignacionVehiculo).filter(
+        AsignacionVehiculo.id_distribuidor == distribuidor_actual.id
+    ).first()
+    
+    if not vehiculo_asignado:
+        raise HTTPException(
+            status_code=400,
+            detail="No tienes un vehículo asignado"
+        )
+    
+    vehiculo = db.query(Vehiculo).filter(
+        Vehiculo.id == vehiculo_asignado.id_vehiculo
+    ).first()
+    
+    if not vehiculo:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehículo no encontrado"
+        )
+    
+    # Contar el número total de cajas en la asignación
+    entregas = db.query(Entrega).filter(
+        Entrega.asignacion_id == asignacion.id
+    ).all()
+    
+    total_cajas = 0
+    pedidos_info = []
+    
+    for entrega in entregas:
+        if entrega.pedido_id:
+            # Contar detalles del pedido (cada detalle es una caja)
+            detalles = db.query(DetallePedido).filter(
+                DetallePedido.pedido_id == entrega.pedido_id
+            ).all()
+            
+            cajas_pedido = sum(detalle.cantidad for detalle in detalles)
+            total_cajas += cajas_pedido
+            pedidos_info.append({
+                "pedido_id": entrega.pedido_id,
+                "entrega_id": entrega.id_entrega,
+                "cajas": cajas_pedido
+            })
+    
+    # Verificar capacidad del vehículo
+    capacidad_vehiculo = vehiculo.capacidad_carga
+    
+    if total_cajas <= capacidad_vehiculo:
+        # El vehículo puede con toda la asignación
+        asignacion.estado = "aceptada"
+        db.commit()
+        
+        # Rechazar la misma asignación (mismo ruta_id) para otros distribuidores
+        otras_asignaciones = db.query(AsignacionEntrega).filter(
+            AsignacionEntrega.ruta_id == asignacion.ruta_id,
+            AsignacionEntrega.id != asignacion.id,
+            AsignacionEntrega.estado == "pendiente"
+        ).all()
+        
+        for otra_asignacion in otras_asignaciones:
+            otra_asignacion.estado = "rechazada"
+        
+        db.commit()
+        
+        return {
+            "mensaje": "Asignación aceptada exitosamente",
+            "asignacion_id": asignacion.id,
+            "estado": asignacion.estado,
+            "total_cajas": total_cajas,
+            "capacidad_vehiculo": capacidad_vehiculo,
+            "otras_asignaciones_rechazadas": len(otras_asignaciones)
+        }
+    
+    else:
+        # El vehículo NO puede con toda la asignación
+        # Necesitamos dividir la asignación
+        
+        # Primero, aceptar la asignación actual pero solo con lo que cabe
+        asignacion.estado = "aceptada"
+        
+        # Determinar qué pedidos/entregas puede tomar este distribuidor
+        cajas_tomadas = 0
+        entregas_tomadas = []
+        pedidos_sobrantes = []
+        
+        for info in pedidos_info:
+            if cajas_tomadas + info["cajas"] <= capacidad_vehiculo:
+                cajas_tomadas += info["cajas"]
+                entregas_tomadas.append(info["entrega_id"])
+            else:
+                pedidos_sobrantes.append(info)
+        
+        # Eliminar las entregas que no puede tomar de esta asignación
+        for info in pedidos_sobrantes:
+            entrega_sobrante = db.query(Entrega).filter(
+                Entrega.id_entrega == info["entrega_id"]
+            ).first()
+            if entrega_sobrante:
+                db.delete(entrega_sobrante)
+        
+        db.commit()
+        
+        # Rechazar otras asignaciones de la misma ruta para otros distribuidores
+        otras_asignaciones = db.query(AsignacionEntrega).filter(
+            AsignacionEntrega.ruta_id == asignacion.ruta_id,
+            AsignacionEntrega.id != asignacion.id,
+            AsignacionEntrega.estado == "pendiente"
+        ).all()
+        
+        for otra_asignacion in otras_asignaciones:
+            otra_asignacion.estado = "rechazada"
+        
+        db.commit()
+        
+        # Crear nuevas asignaciones para los pedidos sobrantes
+        nuevas_asignaciones = _crear_asignacion_para_sobrante(db, pedidos_sobrantes, 10.0)
+        
+        return {
+            "mensaje": "Asignación aceptada parcialmente debido a limitación de capacidad",
+            "asignacion_id": asignacion.id,
+            "estado": asignacion.estado,
+            "total_cajas_originales": total_cajas,
+            "cajas_tomadas": cajas_tomadas,
+            "capacidad_vehiculo": capacidad_vehiculo,
+            "pedidos_sobrantes": len(pedidos_sobrantes),
+            "otras_asignaciones_rechazadas": len(otras_asignaciones),
+            "nuevas_asignaciones_creadas": len(nuevas_asignaciones) if nuevas_asignaciones else 0,
+            "nota": f"Se {'crearon nuevas asignaciones' if nuevas_asignaciones else 'intentó crear nuevas asignaciones'} para los pedidos sobrantes"
+        }
+
+@router.patch("/asignacion/{asignacion_id}/rechazar", dependencies=[Depends(security)])
+def rechazar_asignacion(
+    asignacion_id: UUID,
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Permite al distribuidor autenticado rechazar una asignación de entregas.
+    """
+    # Buscar la asignación
+    asignacion = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id == asignacion_id,
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id
+    ).first()
+    
+    if not asignacion:
+        raise HTTPException(
+            status_code=404, 
+            detail="Asignación no encontrada o no pertenece a este distribuidor"
+        )
+    
+    # Verificar que esté en estado pendiente
+    if asignacion.estado != "pendiente":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"La asignación ya está en estado: {asignacion.estado}"
+        )
+    
+    # Actualizar estado a rechazada
+    asignacion.estado = "rechazada"
+    db.commit()
+    db.refresh(asignacion)
+    
+    return {
+        "mensaje": "Asignación rechazada exitosamente",
+        "asignacion_id": asignacion.id,
+        "estado": asignacion.estado,
+        "fecha_asignacion": asignacion.fecha_asignacion
+    }
+
+@router.get("/mis-asignaciones-pendientes", response_model=list[AsignacionEntregaOut], dependencies=[Depends(security)])
+def obtener_asignaciones_pendientes(
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene todas las asignaciones pendientes del distribuidor autenticado.
+    """
+    # Buscar asignaciones pendientes del distribuidor actual
+    asignaciones = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
+        AsignacionEntrega.estado == "pendiente"
+    ).all()
+    
+    if not asignaciones:
+        return []
+    
+    # Para cada asignación, obtenemos la ruta y las entregas ordenadas
+    resultado = []
+    for asignacion in asignaciones:
+        # Obtener la ruta asociada
+        ruta = db.query(RutaEntrega).filter(
+            RutaEntrega.ruta_id == asignacion.ruta_id
+        ).first()
+        
+        if ruta:
+            # Obtener las entregas ordenadas por orden_entrega
+            entregas_ordenadas = db.query(Entrega).filter(
+                Entrega.asignacion_id == asignacion.id
+            ).order_by(Entrega.orden_entrega).all()
+            
+            # Construir el objeto de respuesta
+            asignacion_data = {
+                "id": asignacion.id,
+                "fecha_asignacion": asignacion.fecha_asignacion,
+                "estado": asignacion.estado,
+                "ruta": {
+                    "ruta_id": ruta.ruta_id,
+                    "coordenadas_inicio": ruta.coordenadas_inicio,
+                    "coordenadas_fin": ruta.coordenadas_fin,
+                    "distancia": float(ruta.distancia) if ruta.distancia else None,
+                    "tiempo_estimado": ruta.tiempo_estimado,
+                    "entregas": [
+                        {
+                            "id_entrega": entrega.id_entrega,
+                            "fecha_hora_reg": entrega.fecha_hora_reg,
+                            "coordenadas_fin": entrega.coordenadas_fin,
+                            "estado": entrega.estado,
+                            "observaciones": entrega.observaciones,
+                            "orden_entrega": entrega.orden_entrega,
+                            "cliente": entrega.cliente,
+                            "pedido": entrega.pedido
+                        }
+                        for entrega in entregas_ordenadas
+                    ]
+                }
+            }
+            resultado.append(asignacion_data)
+    
+    return resultado
+
+@router.get("/mi-capacidad-vehiculo", dependencies=[Depends(security)])
+def obtener_capacidad_vehiculo(
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene información sobre el vehículo y capacidad del distribuidor autenticado.
+    """
+    from app.models.asignacion_vehiculo_model import AsignacionVehiculo
+    from app.models.vehiculo_model import Vehiculo
+    
+    # Obtener el vehículo del distribuidor
+    vehiculo_asignado = db.query(AsignacionVehiculo).filter(
+        AsignacionVehiculo.id_distribuidor == distribuidor_actual.id
+    ).first()
+    
+    if not vehiculo_asignado:
+        return {
+            "tiene_vehiculo": False,
+            "mensaje": "No tienes un vehículo asignado"
+        }
+    
+    vehiculo = db.query(Vehiculo).filter(
+        Vehiculo.id == vehiculo_asignado.id_vehiculo
+    ).first()
+    
+    if not vehiculo:
+        return {
+            "tiene_vehiculo": False,
+            "mensaje": "Vehículo no encontrado"
+        }
+    
+    return {
+        "tiene_vehiculo": True,
+        "vehiculo": {
+            "id": vehiculo.id,
+            "marca": vehiculo.marca,
+            "modelo": vehiculo.modelo,
+            "placa": vehiculo.placa,
+            "capacidad_carga": vehiculo.capacidad_carga,
+            "tipo_vehiculo": vehiculo.tipo_vehiculo,
+            "anio": vehiculo.anio
+        },
+        "mensaje": f"Puedes transportar hasta {vehiculo.capacidad_carga} cajas"
+    }
+
+def _crear_asignacion_para_sobrante(db: Session, pedidos_sobrantes: list, radio_maximo_km: float = 10.0):
+    """
+    Crea una nueva asignación para los pedidos sobrantes usando distribuidores cercanos.
+    """
+    from app.services.asignacion_service import _obtener_distribuidores_cercanos
+    
+    if not pedidos_sobrantes:
+        return None
+    
+    # Obtener información de los pedidos sobrantes
+    pedidos_validos = []
+    for info in pedidos_sobrantes:
+        pedido = db.query(Pedido).filter(Pedido.id == info["pedido_id"]).first()
+        if pedido:
+            cliente = db.query(Cliente).filter(Cliente.id == pedido.cliente_id).first()
+            if cliente and cliente.coordenadas:
+                try:
+                    lat, lon = map(float, cliente.coordenadas.split(","))
+                    pedidos_validos.append((pedido, cliente, (lat, lon)))
+                except (ValueError, TypeError):
+                    continue
+    
+    if not pedidos_validos:
+        return None
+    
+    # Calcular punto central de los pedidos sobrantes
+    centro_lat = sum(coord[2][0] for coord in pedidos_validos) / len(pedidos_validos)
+    centro_lon = sum(coord[2][1] for coord in pedidos_validos) / len(pedidos_validos)
+    punto_central = (centro_lat, centro_lon)
+    
+    # Buscar distribuidores cercanos al punto central
+    distribuidores_disponibles = _obtener_distribuidores_cercanos(db, punto_central, radio_maximo_km)
+    if not distribuidores_disponibles:
+        return None
+    
+    # Crear asignaciones para múltiples distribuidores si es necesario
+    asignaciones_creadas = []
+    pedidos_pendientes = pedidos_validos.copy()
+    
+    for dist_info in distribuidores_disponibles:
+        if not pedidos_pendientes:
+            break
+            
+        distribuidor = dist_info["distribuidor"]
+        vehiculo = dist_info["vehiculo"]
+        capacidad = vehiculo.capacidad_carga
+        
+        # Tomar hasta la capacidad del vehículo
+        pedidos_para_este_distribuidor = []
+        cajas_asignadas = 0
+        
+        for i, (pedido, cliente, coords) in enumerate(pedidos_pendientes):
+            # Contar cajas del pedido
+            detalles = db.query(DetallePedido).filter(DetallePedido.pedido_id == pedido.id).all()
+            cajas_pedido = sum(detalle.cantidad for detalle in detalles)
+            
+            if cajas_asignadas + cajas_pedido <= capacidad:
+                pedidos_para_este_distribuidor.append((pedido, cliente, coords))
+                cajas_asignadas += cajas_pedido
+        
+        if not pedidos_para_este_distribuidor:
+            continue
+        
+        # Remover pedidos asignados de la lista pendiente
+        for pedido_asignado in pedidos_para_este_distribuidor:
+            if pedido_asignado in pedidos_pendientes:
+                pedidos_pendientes.remove(pedido_asignado)
+        
+        # Crear ruta simple sin optimización avanzada
+        tiendas = db.query(Tienda).filter(
+            Tienda.latitud.isnot(None), 
+            Tienda.longitud.isnot(None)
+        ).all()
+        
+        if not tiendas:
+            continue
+            
+        tienda_inicial = min(tiendas, key=lambda t: geodesic(
+            (distribuidor.latitud, distribuidor.longitud),
+            (t.latitud, t.longitud)
+        ).km)
+        
+        # Crear ruta simple
+        coords_inicio = f"{tienda_inicial.latitud},{tienda_inicial.longitud}"
+        coords_fin = pedidos_para_este_distribuidor[-1][1].coordenadas
+        
+        ruta = RutaEntrega(
+            coordenadas_inicio=coords_inicio,
+            coordenadas_fin=coords_fin,
+            distancia=0.0,  # Se puede calcular después
+            tiempo_estimado="Sin calcular"
+        )
+        
+        db.add(ruta)
+        db.commit()
+        db.refresh(ruta)
+        
+        # Crear asignación para cada distribuidor cercano (competencia)
+        distribuidores_para_competir = distribuidores_disponibles[:3]  # Los 3 más cercanos
+        
+        for competidor_info in distribuidores_para_competir:
+            nueva_asignacion = AsignacionEntrega(
+                id_distribuidor=competidor_info["distribuidor"].id,
+                ruta_id=ruta.ruta_id,
+                estado="pendiente"
+            )
+            db.add(nueva_asignacion)
+            db.commit()
+            db.refresh(nueva_asignacion)
+            
+            # Crear entregas para cada pedido
+            for orden, (pedido, cliente, coords) in enumerate(pedidos_para_este_distribuidor, 1):
+                entrega = Entrega(
+                    ruta_id=ruta.ruta_id,
+                    cliente_id=cliente.id,
+                    pedido_id=pedido.id,
+                    asignacion_id=nueva_asignacion.id,
+                    coordenadas_fin=cliente.coordenadas,
+                    orden_entrega=orden
+                )
+                db.add(entrega)
+            
+            # Agregar a pedidos asignados
+            for pedido, _, _ in pedidos_para_este_distribuidor:
+                pedido_asignado = PedidoAsignado(
+                    pedido_id=pedido.id,
+                    asignacion_id=nueva_asignacion.id
+                )
+                db.add(pedido_asignado)
+            
+            asignaciones_creadas.append(nueva_asignacion)
+        
+        db.commit()
+        break  # Solo crear una ruta por ahora
+    
+    return asignaciones_creadas

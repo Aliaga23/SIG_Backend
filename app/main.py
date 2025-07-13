@@ -17,7 +17,37 @@ from app.routes import (
     entregas_routes
 )
 
-app = FastAPI(title="API Distribución de Zapatos")
+app = FastAPI(
+    title="API Distribución de Zapatos",
+  
+)
+
+# Configurar esquema de seguridad para Swagger UI
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title=app.title,
+        version="1.0.0",
+        description="API para sistema de distribución de zapatos",
+        routes=app.routes,
+    )
+    
+    # Agregar esquema de seguridad Bearer
+    openapi_schema["components"]["securitySchemes"] = {
+        "HTTPBearer": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
+        }
+    }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
 
 # Crear tablas
 Base.metadata.create_all(bind=engine)
