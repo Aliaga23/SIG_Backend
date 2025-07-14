@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 
 # Rutas
@@ -20,6 +21,15 @@ from app.routes import (
 app = FastAPI(
     title="API Distribución de Zapatos",
   
+)
+
+# Configurar CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permite todos los orígenes
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos los métodos HTTP
+    allow_headers=["*"],  # Permite todos los headers
 )
 
 # Configurar esquema de seguridad para Swagger UI
@@ -49,9 +59,7 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# Crear tablas
 Base.metadata.create_all(bind=engine)
-# Asegurar que la columna asignacion_id exista en la tabla entrega (migración ligera)
 from sqlalchemy import text
 with engine.begin() as conn:
     conn.execute(text(
