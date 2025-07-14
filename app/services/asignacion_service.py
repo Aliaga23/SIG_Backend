@@ -56,7 +56,14 @@ def asignacion_automatica_propuesta(db: Session, pedidos_ids: list[UUID] = None,
     Si no se especifican pedidos, toma todos los pedidos pendientes.
     El distribuidor asignado puede aceptar o rechazar.
     Si hay más pedidos que la capacidad del vehículo, se crean múltiples asignaciones.
+    Incluye verificación de asignaciones duplicadas.
     """
+    # Verificar si hay asignaciones duplicadas recientes
+    if pedidos_ids:
+        es_duplicada, mensaje = verificar_asignacion_duplicada(db, pedidos_ids=pedidos_ids)
+        if es_duplicada:
+            raise ValueError(f"Asignación duplicada detectada: {mensaje}")
+    
     if pedidos_ids:
         pedidos_pendientes = db.query(Pedido).filter(
             Pedido.id.in_(pedidos_ids),
@@ -359,3 +366,37 @@ def listar_asignaciones_pendientes(db: Session, distribuidor_id: UUID):
         AsignacionEntrega.id_distribuidor == distribuidor_id,
         AsignacionEntrega.estado == "pendiente"
     ).all()
+
+def verificar_asignacion_duplicada(db: Session, ruta_id: UUID = None, pedidos_ids: list[UUID] = None, tiempo_minimo_horas: int = 2):
+    """
+    Verifica si ya existe una asignación reciente para los mismos pedidos o ruta.
+    Retorna True si existe una asignación duplicada (dentro del tiempo mínimo).
+    """
+    from datetime import datetime, timedelta
+    
+    tiempo_limite = datetime.utcnow() - timedelta(hours=tiempo_minimo_horas)
+    
+    # Verificar por ruta_id si se proporciona
+    if ruta_id:
+        asignacion_existente = db.query(AsignacionEntrega).filter(
+            AsignacionEntrega.ruta_id == ruta_id,
+            AsignacionEntrega.fecha_asignacion >= tiempo_limite,
+            AsignacionEntrega.estado.in_(["pendiente", "aceptada"])
+        ).first()
+        
+        if asignacion_existente:
+            return True, f"Ya existe una asignación para esta ruta creada hace menos de {tiempo_minimo_horas} horas"
+    
+    # Verificar por pedidos específicos si se proporcionan
+    if pedidos_ids:
+        for pedido_id in pedidos_ids:
+            pedido_asignado = db.query(PedidoAsignado).join(AsignacionEntrega).filter(
+                PedidoAsignado.pedido_id == pedido_id,
+                AsignacionEntrega.fecha_asignacion >= tiempo_limite,
+                AsignacionEntrega.estado.in_(["pendiente", "aceptada"])
+            ).first()
+            
+            if pedido_asignado:
+                return True, f"El pedido {pedido_id} ya tiene una asignación reciente"
+    
+    return False, "No hay asignaciones duplicadas"

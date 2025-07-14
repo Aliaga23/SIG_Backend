@@ -301,6 +301,14 @@ def aceptar_asignacion(
         # Cambiar estado del distribuidor a ocupado
         distribuidor_actual.estado = "ocupado"
         
+        # Cambiar estado de todos los pedidos asignados a "aceptado"
+        pedidos_aceptados = []
+        for info in pedidos_info:
+            pedido = db.query(Pedido).filter(Pedido.id == info["pedido_id"]).first()
+            if pedido:
+                pedido.estado = "aceptado"
+                pedidos_aceptados.append(str(pedido.id))
+        
         db.commit()
         
         # Rechazar la misma asignación (mismo ruta_id) para otros distribuidores
@@ -322,6 +330,7 @@ def aceptar_asignacion(
             "distribuidor_estado": distribuidor_actual.estado,
             "total_cajas": total_cajas,
             "capacidad_vehiculo": capacidad_vehiculo,
+            "pedidos_aceptados": pedidos_aceptados,
             "otras_asignaciones_rechazadas": len(otras_asignaciones)
         }
     
@@ -339,13 +348,23 @@ def aceptar_asignacion(
         cajas_tomadas = 0
         entregas_tomadas = []
         pedidos_sobrantes = []
+        pedidos_tomados = []
         
         for info in pedidos_info:
             if cajas_tomadas + info["cajas"] <= capacidad_vehiculo:
                 cajas_tomadas += info["cajas"]
                 entregas_tomadas.append(info["entrega_id"])
+                pedidos_tomados.append(info["pedido_id"])
             else:
                 pedidos_sobrantes.append(info)
+        
+        # Cambiar estado de los pedidos tomados a "aceptado"
+        pedidos_aceptados = []
+        for pedido_id in pedidos_tomados:
+            pedido = db.query(Pedido).filter(Pedido.id == pedido_id).first()
+            if pedido:
+                pedido.estado = "aceptado"
+                pedidos_aceptados.append(str(pedido.id))
         
         # Eliminar las entregas que no puede tomar de esta asignación
         for info in pedidos_sobrantes:
@@ -380,6 +399,7 @@ def aceptar_asignacion(
             "total_cajas_originales": total_cajas,
             "cajas_tomadas": cajas_tomadas,
             "capacidad_vehiculo": capacidad_vehiculo,
+            "pedidos_aceptados": pedidos_aceptados,
             "pedidos_sobrantes": len(pedidos_sobrantes),
             "otras_asignaciones_rechazadas": len(otras_asignaciones),
             "nuevas_asignaciones_creadas": len(nuevas_asignaciones) if nuevas_asignaciones else 0,
@@ -433,6 +453,7 @@ def obtener_asignaciones_pendientes(
 ):
     """
     Obtiene todas las asignaciones pendientes del distribuidor autenticado.
+    Solo muestra asignaciones que realmente están disponibles para aceptar.
     """
     # Buscar asignaciones pendientes del distribuidor actual
     asignaciones = db.query(AsignacionEntrega).filter(
@@ -443,9 +464,27 @@ def obtener_asignaciones_pendientes(
     if not asignaciones:
         return []
     
-    # Para cada asignación, obtenemos la ruta y las entregas ordenadas
-    resultado = []
+    # Verificar que no haya asignaciones de la misma ruta ya aceptadas por otros
+    asignaciones_validas = []
     for asignacion in asignaciones:
+        # Verificar si hay alguna asignación aceptada para la misma ruta
+        asignacion_aceptada_existente = db.query(AsignacionEntrega).filter(
+            AsignacionEntrega.ruta_id == asignacion.ruta_id,
+            AsignacionEntrega.estado == "aceptada",
+            AsignacionEntrega.id != asignacion.id
+        ).first()
+        
+        # Si no hay ninguna asignación aceptada para esta ruta, es válida
+        if not asignacion_aceptada_existente:
+            asignaciones_validas.append(asignacion)
+        else:
+            # Marcar como rechazada automáticamente si ya fue aceptada por otro
+            asignacion.estado = "rechazada"
+            db.commit()
+    
+    # Para cada asignación válida, obtenemos la ruta y las entregas ordenadas
+    resultado = []
+    for asignacion in asignaciones_validas:
         # Obtener la ruta asociada
         ruta = db.query(RutaEntrega).filter(
             RutaEntrega.ruta_id == asignacion.ruta_id
@@ -533,13 +572,64 @@ def obtener_capacidad_vehiculo(
         "mensaje": f"Puedes transportar hasta {vehiculo.capacidad_carga} cajas"
     }
 
+@router.get("/verificar-estado-asignacion/{asignacion_id}", dependencies=[Depends(security)])
+def verificar_estado_asignacion(
+    asignacion_id: UUID,
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Verifica el estado actual de una asignación antes de que el distribuidor intente aceptarla.
+    Útil para evitar que distribuidores intenten aceptar asignaciones ya tomadas.
+    """
+    asignacion = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id == asignacion_id
+    ).first()
+    
+    if not asignacion:
+        raise HTTPException(
+            status_code=404,
+            detail="Asignación no encontrada"
+        )
+    
+    # Verificar si la asignación pertenece al distribuidor actual
+    es_propia = asignacion.id_distribuidor == distribuidor_actual.id
+    
+    return {
+        "asignacion_id": asignacion_id,
+        "estado": asignacion.estado,
+        "es_propia": es_propia,
+        "puede_aceptar": asignacion.estado == "pendiente" and es_propia,
+        "fecha_asignacion": asignacion.fecha_asignacion,
+        "mensaje": _obtener_mensaje_estado(asignacion.estado, es_propia)
+    }
+
+def _obtener_mensaje_estado(estado: str, es_propia: bool) -> str:
+    """Obtiene un mensaje descriptivo basado en el estado de la asignación"""
+    if estado == "pendiente":
+        return "Asignación disponible para aceptar" if es_propia else "Esta asignación está pendiente para otro distribuidor"
+    elif estado == "aceptada":
+        return "Ya aceptaste esta asignación" if es_propia else "Esta asignación ya fue aceptada por otro distribuidor"
+    elif estado == "rechazada":
+        return "Asignación rechazada"
+    else:
+        return f"Estado desconocido: {estado}"
+
 def _crear_asignacion_para_sobrante(db: Session, pedidos_sobrantes: list, radio_maximo_km: float = 10.0):
     """
     Crea una nueva asignación para los pedidos sobrantes usando distribuidores cercanos.
+    Incluye verificación de asignaciones duplicadas.
     """
-    from app.services.asignacion_service import _obtener_distribuidores_cercanos
+    from app.services.asignacion_service import _obtener_distribuidores_cercanos, verificar_asignacion_duplicada
     
     if not pedidos_sobrantes:
+        return None
+    
+    # Verificar si hay asignaciones duplicadas para estos pedidos
+    pedidos_ids = [info["pedido_id"] for info in pedidos_sobrantes]
+    es_duplicada, mensaje = verificar_asignacion_duplicada(db, pedidos_ids=pedidos_ids)
+    if es_duplicada:
+        print(f"⚠️ Asignación duplicada detectada para pedidos sobrantes: {mensaje}")
         return None
     
     # Obtener información de los pedidos sobrantes
@@ -669,3 +759,91 @@ def _crear_asignacion_para_sobrante(db: Session, pedidos_sobrantes: list, radio_
         break  # Solo crear una ruta por ahora
     
     return asignaciones_creadas
+
+@router.post("/limpiar-asignaciones-obsoletas", dependencies=[Depends(security)])
+def limpiar_asignaciones_obsoletas(
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db),
+    horas_limite: int = 24
+):
+    """
+    Limpia asignaciones pendientes obsoletas (más antiguas que el límite especificado).
+    Solo afecta las asignaciones del distribuidor autenticado.
+    """
+    from datetime import datetime, timedelta
+    
+    tiempo_limite = datetime.utcnow() - timedelta(hours=horas_limite)
+    
+    # Buscar asignaciones pendientes obsoletas del distribuidor actual
+    asignaciones_obsoletas = db.query(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
+        AsignacionEntrega.estado == "pendiente",
+        AsignacionEntrega.fecha_asignacion < tiempo_limite
+    ).all()
+    
+    if not asignaciones_obsoletas:
+        return {
+            "mensaje": "No hay asignaciones obsoletas para limpiar",
+            "asignaciones_limpiadas": 0,
+            "limite_horas": horas_limite
+        }
+    
+    # Marcar como rechazadas
+    for asignacion in asignaciones_obsoletas:
+        asignacion.estado = "rechazada"
+    
+    db.commit()
+    
+    return {
+        "mensaje": f"Se limpiaron {len(asignaciones_obsoletas)} asignaciones obsoletas",
+        "asignaciones_limpiadas": len(asignaciones_obsoletas),
+        "limite_horas": horas_limite,
+        "asignaciones_ids": [str(a.id) for a in asignaciones_obsoletas]
+    }
+
+@router.patch("/entrega/{entrega_id}/completar", dependencies=[Depends(security)])
+def completar_entrega(
+    entrega_id: UUID,
+    distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
+    db: Session = Depends(get_db)
+):
+    """
+    Marca una entrega como completada y actualiza el estado del pedido.
+    """
+    # Buscar la entrega
+    entrega = db.query(Entrega).join(AsignacionEntrega).filter(
+        Entrega.id_entrega == entrega_id,
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id
+    ).first()
+    
+    if not entrega:
+        raise HTTPException(
+            status_code=404,
+            detail="Entrega no encontrada o no pertenece a este distribuidor"
+        )
+    
+    if entrega.estado == "entregado":
+        return {
+            "mensaje": "La entrega ya está marcada como completada",
+            "entrega_id": entrega_id,
+            "estado": entrega.estado
+        }
+    
+    # Marcar entrega como completada
+    entrega.estado = "entregado"
+    
+    # Marcar pedido como entregado
+    if entrega.pedido_id:
+        pedido = db.query(Pedido).filter(Pedido.id == entrega.pedido_id).first()
+        if pedido:
+            pedido.estado = "entregado"
+    
+    db.commit()
+    
+    return {
+        "mensaje": "Entrega completada exitosamente",
+        "entrega_id": entrega_id,
+        "pedido_id": entrega.pedido_id,
+        "estado_entrega": entrega.estado,
+        "estado_pedido": "entregado" if entrega.pedido_id else None
+    }
