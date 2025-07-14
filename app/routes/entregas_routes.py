@@ -248,8 +248,29 @@ def aceptar_asignacion(
                 detail="No se encontró la ruta asociada a la asignación"
             )
         
-        # Crear entregas para cada pedido asignado
-        for orden, pedido_asignado in enumerate(pedidos_asignados, 1):
+        # Obtener tienda más cercana al distribuidor (punto de recogida)
+        tiendas = db.query(Tienda).filter(
+            Tienda.latitud.isnot(None), 
+            Tienda.longitud.isnot(None)
+        ).all()
+        
+        if not tiendas:
+            raise HTTPException(
+                status_code=400,
+                detail="No hay tiendas disponibles con coordenadas"
+            )
+            
+        tienda_inicial = min(tiendas, key=lambda t: geodesic(
+            (distribuidor_actual.latitud, distribuidor_actual.longitud),
+            (t.latitud, t.longitud)
+        ).km)
+        
+        # Optimizar orden de entregas basado en la ubicación de la tienda
+        punto_inicio = (tienda_inicial.latitud, tienda_inicial.longitud)
+        pedidos_optimizados = _optimizar_orden_entregas(db, pedidos_asignados, punto_inicio)
+        
+        # Crear entregas para cada pedido asignado en orden optimizado
+        for orden, pedido_asignado in enumerate(pedidos_optimizados, 1):
             pedido = db.query(Pedido).filter(Pedido.id == pedido_asignado.pedido_id).first()
             if pedido:
                 cliente = db.query(Cliente).filter(Cliente.id == pedido.cliente_id).first()
@@ -733,8 +754,14 @@ def _crear_asignacion_para_sobrante(db: Session, pedidos_sobrantes: list, radio_
             db.commit()
             db.refresh(nueva_asignacion)
             
-            # Crear entregas para cada pedido
-            for orden, (pedido, cliente, coords) in enumerate(pedidos_para_este_distribuidor, 1):
+            # Optimizar orden de entregas usando la tienda como punto de inicio
+            pedidos_optimizados = _optimizar_orden_entregas_sobrantes(
+                pedidos_para_este_distribuidor,
+                (tienda_inicial.latitud, tienda_inicial.longitud)
+            )
+            
+            # Crear entregas para cada pedido con orden optimizado
+            for orden, (pedido, cliente, coords) in enumerate(pedidos_optimizados, 1):
                 entrega = Entrega(
                     ruta_id=ruta.ruta_id,
                     cliente_id=cliente.id,
@@ -850,6 +877,19 @@ def marcar_entrega_completada(
     
     db.commit()
     
+    # Si la entrega fue exitosa, reoptimizar las entregas pendientes restantes
+    # usando la ubicación actual como nuevo punto de inicio
+    entregas_reoptimizadas = False
+    if datos_entrega.estado == "entregado" and datos_entrega.coordenadas_fin:
+        try:
+            lat, lon = map(float, datos_entrega.coordenadas_fin.split(","))
+            ultima_ubicacion = (lat, lon)
+            _reoptimizar_entregas_pendientes(db, distribuidor_actual.id, ultima_ubicacion)
+            entregas_reoptimizadas = True
+        except (ValueError, TypeError):
+            # Si hay error en las coordenadas, no reoptimizar
+            pass
+    
     # Verificar si el distribuidor ha completado todas sus entregas
     entregas_pendientes = db.query(Entrega).join(AsignacionEntrega).filter(
         AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
@@ -874,5 +914,208 @@ def marcar_entrega_completada(
         "observaciones": entrega.observaciones,
         "distribuidor_estado": distribuidor_actual.estado,
         "todas_entregas_completadas": entregas_pendientes == 0,
-        "estado_distribuidor_actualizado": estado_distribuidor_actualizado
+        "estado_distribuidor_actualizado": estado_distribuidor_actualizado,
+        "entregas_reoptimizadas": entregas_reoptimizadas
     }
+
+def _optimizar_orden_entregas(db: Session, pedidos_asignados: list, punto_inicio: tuple):
+    """
+    Optimiza el orden de entregas usando el algoritmo del vecino más cercano.
+    
+    Args:
+        db: Sesión de base de datos
+        pedidos_asignados: Lista de pedidos asignados
+        punto_inicio: Tupla (lat, lon) del punto de inicio (tienda donde se recogen los productos)
+    
+    Returns:
+        Lista de pedidos ordenados por ruta óptima
+    """
+    # Obtener información de ubicación de cada pedido
+    pedidos_con_ubicacion = []
+    for pedido_asignado in pedidos_asignados:
+        pedido = db.query(Pedido).filter(Pedido.id == pedido_asignado.pedido_id).first()
+        if pedido:
+            cliente = db.query(Cliente).filter(Cliente.id == pedido.cliente_id).first()
+            if cliente and cliente.coordenadas:
+                try:
+                    lat, lon = map(float, cliente.coordenadas.split(","))
+                    pedidos_con_ubicacion.append({
+                        'pedido_asignado': pedido_asignado,
+                        'pedido': pedido,
+                        'cliente': cliente,
+                        'coordenadas': (lat, lon)
+                    })
+                except (ValueError, TypeError):
+                    # Si hay error en coordenadas, agregar al final
+                    pedidos_con_ubicacion.append({
+                        'pedido_asignado': pedido_asignado,
+                        'pedido': pedido,
+                        'cliente': cliente,
+                        'coordenadas': None
+                    })
+    
+    if not pedidos_con_ubicacion:
+        return pedidos_asignados
+    
+    # Separar pedidos con y sin coordenadas válidas
+    pedidos_con_coords = [p for p in pedidos_con_ubicacion if p['coordenadas'] is not None]
+    pedidos_sin_coords = [p for p in pedidos_con_ubicacion if p['coordenadas'] is None]
+    
+    if not pedidos_con_coords:
+        return pedidos_asignados
+    
+    # Algoritmo del vecino más cercano
+    ruta_optimizada = []
+    pedidos_restantes = pedidos_con_coords.copy()
+    ubicacion_actual = punto_inicio
+    
+    while pedidos_restantes:
+        # Encontrar el pedido más cercano a la ubicación actual
+        pedido_mas_cercano = None
+        distancia_minima = float('inf')
+        
+        for pedido_info in pedidos_restantes:
+            distancia = geodesic(ubicacion_actual, pedido_info['coordenadas']).km
+            if distancia < distancia_minima:
+                distancia_minima = distancia
+                pedido_mas_cercano = pedido_info
+        
+        if pedido_mas_cercano:
+            # Agregar a la ruta optimizada y actualizar ubicación actual
+            ruta_optimizada.append(pedido_mas_cercano)
+            ubicacion_actual = pedido_mas_cercano['coordenadas']
+            pedidos_restantes.remove(pedido_mas_cercano)
+    
+    # Agregar pedidos sin coordenadas al final
+    ruta_optimizada.extend(pedidos_sin_coords)
+    
+    # Retornar solo los pedidos_asignados en el orden optimizado
+    return [info['pedido_asignado'] for info in ruta_optimizada]
+
+def _optimizar_orden_entregas_sobrantes(pedidos_info: list, punto_inicio: tuple):
+    """
+    Optimiza el orden de entregas para pedidos sobrantes usando el algoritmo del vecino más cercano.
+    
+    Args:
+        pedidos_info: Lista de tuplas (pedido, cliente, coordenadas)
+        punto_inicio: Tupla (lat, lon) del punto de inicio (tienda)
+    
+    Returns:
+        Lista de tuplas ordenadas por ruta óptima
+    """
+    if not pedidos_info:
+        return []
+    
+    # Separar pedidos con y sin coordenadas válidas
+    pedidos_con_coords = [p for p in pedidos_info if p[2] is not None]
+    pedidos_sin_coords = [p for p in pedidos_info if p[2] is None]
+    
+    if not pedidos_con_coords:
+        return pedidos_info
+    
+    # Algoritmo del vecino más cercano
+    ruta_optimizada = []
+    pedidos_restantes = pedidos_con_coords.copy()
+    ubicacion_actual = punto_inicio
+    
+    while pedidos_restantes:
+        # Encontrar el pedido más cercano a la ubicación actual
+        pedido_mas_cercano = None
+        distancia_minima = float('inf')
+        
+        for pedido_info in pedidos_restantes:
+            distancia = geodesic(ubicacion_actual, pedido_info[2]).km
+            if distancia < distancia_minima:
+                distancia_minima = distancia
+                pedido_mas_cercano = pedido_info
+        
+        if pedido_mas_cercano:
+            # Agregar a la ruta optimizada y actualizar ubicación actual
+            ruta_optimizada.append(pedido_mas_cercano)
+            ubicacion_actual = pedido_mas_cercano[2]
+            pedidos_restantes.remove(pedido_mas_cercano)
+    
+    # Agregar pedidos sin coordenadas al final
+    ruta_optimizada.extend(pedidos_sin_coords)
+    
+    return ruta_optimizada
+
+def _reoptimizar_entregas_pendientes(db: Session, distribuidor_id: UUID, ultima_ubicacion: tuple):
+    """
+    Reoptimiza las entregas pendientes del distribuidor basándose en su ubicación actual.
+    
+    Args:
+        db: Sesión de base de datos
+        distribuidor_id: ID del distribuidor
+        ultima_ubicacion: Tupla (lat, lon) de la última ubicación conocida
+    """
+    # Obtener entregas pendientes del distribuidor ordenadas por orden_entrega
+    entregas_pendientes = db.query(Entrega).join(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_id,
+        AsignacionEntrega.estado == "aceptada",
+        Entrega.estado == "pendiente"
+    ).order_by(Entrega.orden_entrega).all()
+    
+    if len(entregas_pendientes) <= 1:
+        # Si hay 1 o menos entregas pendientes, no hay nada que optimizar
+        return
+    
+    # Convertir entregas a formato para optimización
+    entregas_info = []
+    for entrega in entregas_pendientes:
+        if entrega.coordenadas_fin:
+            try:
+                lat, lon = map(float, entrega.coordenadas_fin.split(","))
+                entregas_info.append({
+                    'entrega': entrega,
+                    'coordenadas': (lat, lon)
+                })
+            except (ValueError, TypeError):
+                # Si hay error en coordenadas, mantener al final
+                entregas_info.append({
+                    'entrega': entrega,
+                    'coordenadas': None
+                })
+    
+    if len(entregas_info) <= 1:
+        return
+    
+    # Aplicar algoritmo del vecino más cercano desde la ubicación actual
+    entregas_con_coords = [e for e in entregas_info if e['coordenadas'] is not None]
+    entregas_sin_coords = [e for e in entregas_info if e['coordenadas'] is None]
+    
+    if not entregas_con_coords:
+        return
+    
+    # Algoritmo del vecino más cercano
+    ruta_optimizada = []
+    entregas_restantes = entregas_con_coords.copy()
+    ubicacion_actual = ultima_ubicacion
+    
+    while entregas_restantes:
+        # Encontrar la entrega más cercana a la ubicación actual
+        entrega_mas_cercana = None
+        distancia_minima = float('inf')
+        
+        for entrega_info in entregas_restantes:
+            distancia = geodesic(ubicacion_actual, entrega_info['coordenadas']).km
+            if distancia < distancia_minima:
+                distancia_minima = distancia
+                entrega_mas_cercana = entrega_info
+        
+        if entrega_mas_cercana:
+            # Agregar a la ruta optimizada y actualizar ubicación actual
+            ruta_optimizada.append(entrega_mas_cercana)
+            ubicacion_actual = entrega_mas_cercana['coordenadas']
+            entregas_restantes.remove(entrega_mas_cercana)
+    
+    # Agregar entregas sin coordenadas al final
+    ruta_optimizada.extend(entregas_sin_coords)
+    
+    # Actualizar el orden_entrega en la base de datos
+    for nuevo_orden, entrega_info in enumerate(ruta_optimizada, 1):
+        entrega_info['entrega'].orden_entrega = nuevo_orden
+    
+    db.commit()
+    
+    print(f"✅ Reoptimizadas {len(ruta_optimizada)} entregas pendientes para distribuidor {distribuidor_id}")
