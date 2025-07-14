@@ -17,3 +17,4 @@ class Distribuidor(Base):
     latitud = Column(Float, nullable=True)
     longitud = Column(Float, nullable=True)
     activo = Column(Boolean, default=True)
+    estado = Column(String(20), default="disponible")  # disponible, ocupado, inactivo

@@ -136,12 +136,15 @@ def asignacion_automatica_propuesta(db: Session, pedidos_ids: list[UUID] = None,
 def _obtener_distribuidores_cercanos(db: Session, punto_central: tuple, radio_maximo_km: float):
     """
     Obtiene distribuidores disponibles ordenados por proximidad a un punto central.
+    Solo incluye distribuidores que estén activos, tengan coordenadas, vehículo asignado 
+    y que NO estén ocupados.
     """
-    # Obtener distribuidores activos con coordenadas
+    # Obtener distribuidores activos con coordenadas y que no estén ocupados
     distribuidores = db.query(Distribuidor).filter(
         Distribuidor.activo == True,
         Distribuidor.latitud.isnot(None),
-        Distribuidor.longitud.isnot(None)
+        Distribuidor.longitud.isnot(None),
+        Distribuidor.estado != "ocupado"  # Excluir distribuidores ocupados
     ).all()
     
     distribuidores_disponibles = []

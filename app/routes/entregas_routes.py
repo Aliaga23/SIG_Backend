@@ -297,6 +297,10 @@ def aceptar_asignacion(
     if total_cajas <= capacidad_vehiculo:
         # El vehículo puede con toda la asignación
         asignacion.estado = "aceptada"
+        
+        # Cambiar estado del distribuidor a ocupado
+        distribuidor_actual.estado = "ocupado"
+        
         db.commit()
         
         # Rechazar la misma asignación (mismo ruta_id) para otros distribuidores
@@ -315,6 +319,7 @@ def aceptar_asignacion(
             "mensaje": "Asignación aceptada exitosamente",
             "asignacion_id": asignacion.id,
             "estado": asignacion.estado,
+            "distribuidor_estado": distribuidor_actual.estado,
             "total_cajas": total_cajas,
             "capacidad_vehiculo": capacidad_vehiculo,
             "otras_asignaciones_rechazadas": len(otras_asignaciones)
@@ -326,6 +331,9 @@ def aceptar_asignacion(
         
         # Primero, aceptar la asignación actual pero solo con lo que cabe
         asignacion.estado = "aceptada"
+        
+        # Cambiar estado del distribuidor a ocupado
+        distribuidor_actual.estado = "ocupado"
         
         # Determinar qué pedidos/entregas puede tomar este distribuidor
         cajas_tomadas = 0
@@ -368,6 +376,7 @@ def aceptar_asignacion(
             "mensaje": "Asignación aceptada parcialmente debido a limitación de capacidad",
             "asignacion_id": asignacion.id,
             "estado": asignacion.estado,
+            "distribuidor_estado": distribuidor_actual.estado,
             "total_cajas_originales": total_cajas,
             "cajas_tomadas": cajas_tomadas,
             "capacidad_vehiculo": capacidad_vehiculo,
