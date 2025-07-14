@@ -14,6 +14,7 @@ from app.models.ruta_entrega_model import RutaEntrega, Entrega
 from app.models.pedido_model import Pedido, DetallePedido
 from app.models.cliente_model import Cliente
 from app.models.tienda_model import Tienda
+from app.models.producto_model import Producto
 from app.models.vehiculo_model import Vehiculo
 from app.models.asignacion_vehiculo_model import AsignacionVehiculo
 from app.models.tienda_model import Tienda
@@ -914,6 +915,19 @@ def marcar_entrega_completada(
             if datos_entrega.estado == "entregado":
                 pedido.estado = "entregado"
                 estado_pedido = "entregado"
+                
+                detalles_pedido = db.query(DetallePedido).filter(
+                    DetallePedido.pedido_id == pedido.id
+                ).all()
+                
+                for detalle in detalles_pedido:
+                    if detalle.producto_id:
+                        producto = db.query(Producto).filter(
+                            Producto.id == detalle.producto_id
+                        ).first()
+                        if producto and producto.stock >= detalle.cantidad:
+                            producto.stock -= detalle.cantidad
+                        
             elif datos_entrega.estado == "fallido":
                 pedido.estado = "fallido"
                 estado_pedido = "fallido"
@@ -923,8 +937,10 @@ def marcar_entrega_completada(
     entregas_reoptimizadas = False
     ruta_actualizada = False
     nuevas_coordenadas_inicio = None
+    stock_actualizado = False
     
     if datos_entrega.estado == "entregado" and datos_entrega.coordenadas_fin:
+        stock_actualizado = True
         try:
             lat, lon = map(float, datos_entrega.coordenadas_fin.split(","))
             ultima_ubicacion = (lat, lon)
@@ -969,7 +985,7 @@ def marcar_entrega_completada(
         "estado_distribuidor_actualizado": estado_distribuidor_actualizado,
         "entregas_reoptimizadas": entregas_reoptimizadas,
         "ruta_actualizada": ruta_actualizada,
-        "nuevas_coordenadas_inicio": nuevas_coordenadas_inicio
+        "nuevas_coordenadas_inicio": nuevas_coordenadas_inicio,
     }
 
 def _optimizar_orden_entregas(db: Session, pedidos_asignados: list, punto_inicio: tuple):
