@@ -44,7 +44,6 @@ def obtener_mis_entregas(
     Obtiene todas las asignaciones de entregas del distribuidor autenticado
     con el orden de las entregas, ubicación actual y próxima entrega.
     """
-    # Buscar todas las asignaciones del distribuidor actual
     asignaciones = db.query(AsignacionEntrega).filter(
         AsignacionEntrega.id_distribuidor == distribuidor_actual.id
     ).all()
@@ -52,13 +51,11 @@ def obtener_mis_entregas(
     if not asignaciones:
         return []
     
-    # Obtener la última entrega completada para determinar ubicación actual
     ultima_entrega_completada = db.query(Entrega).join(AsignacionEntrega).filter(
         AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
         Entrega.estado == "entregado"
     ).order_by(Entrega.fecha_hora_reg.desc()).first()
     
-    # Determinar ubicación actual del distribuidor
     ubicacion_actual = None
     if ultima_entrega_completada and ultima_entrega_completada.coordenadas_fin:
         try:
@@ -72,7 +69,6 @@ def obtener_mis_entregas(
         except (ValueError, TypeError):
             pass
     
-    # Si no hay entrega completada, usar ubicación de la tienda más cercana
     if not ubicacion_actual:
         tiendas = db.query(Tienda).filter(
             Tienda.latitud.isnot(None), 
@@ -92,21 +88,17 @@ def obtener_mis_entregas(
                 "tienda_nombre": tienda_inicial.nombre if hasattr(tienda_inicial, 'nombre') else "Tienda"
             }
     
-    # Para cada asignación, obtenemos la ruta y las entregas ordenadas
     resultado = []
     for asignacion in asignaciones:
-        # Obtener la ruta asociada
         ruta = db.query(RutaEntrega).filter(
             RutaEntrega.ruta_id == asignacion.ruta_id
         ).first()
         
         if ruta:
-            # Obtener las entregas ordenadas por orden_entrega
             entregas_ordenadas = db.query(Entrega).filter(
                 Entrega.asignacion_id == asignacion.id
             ).order_by(Entrega.orden_entrega).all()
             
-            # Encontrar la próxima entrega pendiente
             proxima_entrega = None
             for entrega in entregas_ordenadas:
                 if entrega.estado == "pendiente":
@@ -118,7 +110,6 @@ def obtener_mis_entregas(
                     }
                     break
             
-            # Construir el objeto de respuesta
             asignacion_data = {
                 "id": asignacion.id,
                 "fecha_asignacion": asignacion.fecha_asignacion,
@@ -231,7 +222,6 @@ def aceptar_asignacion(
     from app.models.vehiculo_model import Vehiculo
     from app.models.pedido_model import Pedido, DetallePedido
     
-    # Buscar la asignación
     asignacion = db.query(AsignacionEntrega).filter(
         AsignacionEntrega.id == asignacion_id,
         AsignacionEntrega.id_distribuidor == distribuidor_actual.id
@@ -243,14 +233,12 @@ def aceptar_asignacion(
             detail="Asignación no encontrada o no pertenece a este distribuidor"
         )
     
-    # Verificar que esté en estado pendiente
     if asignacion.estado != "pendiente":
         raise HTTPException(
             status_code=400, 
             detail=f"La asignación ya está en estado: {asignacion.estado}"
         )
     
-    # Obtener el vehículo del distribuidor
     vehiculo_asignado = db.query(AsignacionVehiculo).filter(
         AsignacionVehiculo.id_distribuidor == distribuidor_actual.id
     ).first()
@@ -932,8 +920,6 @@ def marcar_entrega_completada(
     
     db.commit()
     
-    # Si la entrega fue exitosa, reoptimizar las entregas pendientes restantes
-    # usando la ubicación actual como nuevo punto de inicio
     entregas_reoptimizadas = False
     ruta_actualizada = False
     nuevas_coordenadas_inicio = None
@@ -945,30 +931,25 @@ def marcar_entrega_completada(
             _reoptimizar_entregas_pendientes(db, distribuidor_actual.id, ultima_ubicacion)
             entregas_reoptimizadas = True
             
-            # Actualizar las coordenadas de inicio de la ruta para reflejar la nueva ubicación
             ruta = db.query(RutaEntrega).filter(
                 RutaEntrega.ruta_id == entrega.ruta_id
             ).first()
             
             if ruta:
-                # Actualizar coordenadas de inicio con la ubicación de la entrega completada
                 ruta.coordenadas_inicio = datos_entrega.coordenadas_fin
                 nuevas_coordenadas_inicio = datos_entrega.coordenadas_fin
                 ruta_actualizada = True
                 db.commit()
                 
         except (ValueError, TypeError):
-            # Si hay error en las coordenadas, no reoptimizar
             pass
     
-    # Verificar si el distribuidor ha completado todas sus entregas
     entregas_pendientes = db.query(Entrega).join(AsignacionEntrega).filter(
         AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
         AsignacionEntrega.estado == "aceptada",
         Entrega.estado == "pendiente"
     ).count()
     
-    # Si no tiene más entregas pendientes, cambiar estado a disponible
     estado_distribuidor_actualizado = False
     if entregas_pendientes == 0 and distribuidor_actual.estado == "ocupado":
         distribuidor_actual.estado = "disponible"
