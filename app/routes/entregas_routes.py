@@ -801,14 +801,16 @@ def limpiar_asignaciones_obsoletas(
         "asignaciones_ids": [str(a.id) for a in asignaciones_obsoletas]
     }
 
-@router.patch("/entrega/{entrega_id}/completar", dependencies=[Depends(security)])
-def completar_entrega(
+@router.patch("/completar/{entrega_id}", dependencies=[Depends(security)])
+def marcar_entrega_completada(
     entrega_id: UUID,
+    datos_entrega: EntregaUpdate,
     distribuidor_actual: Distribuidor = Depends(get_current_distribuidor),
     db: Session = Depends(get_db)
 ):
     """
-    Marca una entrega como completada y actualiza el estado del pedido.
+    Marca una entrega como completada/fallida, actualiza el estado del pedido y guarda 
+    las coordenadas finales y observaciones.
     """
     # Buscar la entrega
     entrega = db.query(Entrega).join(AsignacionEntrega).filter(
@@ -822,28 +824,55 @@ def completar_entrega(
             detail="Entrega no encontrada o no pertenece a este distribuidor"
         )
     
-    if entrega.estado == "entregado":
+    if entrega.estado in ["entregado", "fallido"]:
         return {
-            "mensaje": "La entrega ya está marcada como completada",
+            "mensaje": f"La entrega ya está marcada como {entrega.estado}",
             "entrega_id": entrega_id,
             "estado": entrega.estado
         }
     
-    # Marcar entrega como completada
-    entrega.estado = "entregado"
+    # Actualizar la entrega con los datos recibidos
+    entrega.estado = datos_entrega.estado
+    entrega.coordenadas_fin = datos_entrega.coordenadas_fin
+    entrega.observaciones = datos_entrega.observaciones
     
-    # Marcar pedido como entregado
+    # Actualizar estado del pedido según el resultado de la entrega
+    estado_pedido = None
     if entrega.pedido_id:
         pedido = db.query(Pedido).filter(Pedido.id == entrega.pedido_id).first()
         if pedido:
-            pedido.estado = "entregado"
+            if datos_entrega.estado == "entregado":
+                pedido.estado = "entregado"
+                estado_pedido = "entregado"
+            elif datos_entrega.estado == "fallido":
+                pedido.estado = "fallido"
+                estado_pedido = "fallido"
     
     db.commit()
     
+    # Verificar si el distribuidor ha completado todas sus entregas
+    entregas_pendientes = db.query(Entrega).join(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
+        AsignacionEntrega.estado == "aceptada",
+        Entrega.estado == "pendiente"
+    ).count()
+    
+    # Si no tiene más entregas pendientes, cambiar estado a disponible
+    estado_distribuidor_actualizado = False
+    if entregas_pendientes == 0 and distribuidor_actual.estado == "ocupado":
+        distribuidor_actual.estado = "disponible"
+        estado_distribuidor_actualizado = True
+        db.commit()
+    
     return {
-        "mensaje": "Entrega completada exitosamente",
+        "mensaje": f"Entrega marcada como {datos_entrega.estado} exitosamente",
         "entrega_id": entrega_id,
         "pedido_id": entrega.pedido_id,
         "estado_entrega": entrega.estado,
-        "estado_pedido": "entregado" if entrega.pedido_id else None
+        "estado_pedido": estado_pedido,
+        "coordenadas_fin": entrega.coordenadas_fin,
+        "observaciones": entrega.observaciones,
+        "distribuidor_estado": distribuidor_actual.estado,
+        "todas_entregas_completadas": entregas_pendientes == 0,
+        "estado_distribuidor_actualizado": estado_distribuidor_actualizado
     }
