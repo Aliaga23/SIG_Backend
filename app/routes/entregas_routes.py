@@ -13,6 +13,7 @@ from app.models.asignacion_model import AsignacionEntrega, PedidoAsignado
 from app.models.ruta_entrega_model import RutaEntrega, Entrega
 from app.models.pedido_model import Pedido, DetallePedido
 from app.models.cliente_model import Cliente
+from app.models.tienda_model import Tienda
 from app.models.vehiculo_model import Vehiculo
 from app.models.asignacion_vehiculo_model import AsignacionVehiculo
 from app.models.tienda_model import Tienda
@@ -41,7 +42,7 @@ def obtener_mis_entregas(
 ):
     """
     Obtiene todas las asignaciones de entregas del distribuidor autenticado
-    con el orden de las entregas y toda la información necesaria.
+    con el orden de las entregas, ubicación actual y próxima entrega.
     """
     # Buscar todas las asignaciones del distribuidor actual
     asignaciones = db.query(AsignacionEntrega).filter(
@@ -50,6 +51,46 @@ def obtener_mis_entregas(
     
     if not asignaciones:
         return []
+    
+    # Obtener la última entrega completada para determinar ubicación actual
+    ultima_entrega_completada = db.query(Entrega).join(AsignacionEntrega).filter(
+        AsignacionEntrega.id_distribuidor == distribuidor_actual.id,
+        Entrega.estado == "entregado"
+    ).order_by(Entrega.fecha_hora_reg.desc()).first()
+    
+    # Determinar ubicación actual del distribuidor
+    ubicacion_actual = None
+    if ultima_entrega_completada and ultima_entrega_completada.coordenadas_fin:
+        try:
+            lat, lon = map(float, ultima_entrega_completada.coordenadas_fin.split(","))
+            ubicacion_actual = {
+                "latitud": lat,
+                "longitud": lon,
+                "descripcion": "Última entrega completada",
+                "entrega_id": str(ultima_entrega_completada.id_entrega)
+            }
+        except (ValueError, TypeError):
+            pass
+    
+    # Si no hay entrega completada, usar ubicación de la tienda más cercana
+    if not ubicacion_actual:
+        tiendas = db.query(Tienda).filter(
+            Tienda.latitud.isnot(None), 
+            Tienda.longitud.isnot(None)
+        ).all()
+        
+        if tiendas:
+            tienda_inicial = min(tiendas, key=lambda t: geodesic(
+                (distribuidor_actual.latitud, distribuidor_actual.longitud),
+                (t.latitud, t.longitud)
+            ).km)
+            
+            ubicacion_actual = {
+                "latitud": tienda_inicial.latitud,
+                "longitud": tienda_inicial.longitud,
+                "descripcion": "Tienda de recogida",
+                "tienda_nombre": tienda_inicial.nombre if hasattr(tienda_inicial, 'nombre') else "Tienda"
+            }
     
     # Para cada asignación, obtenemos la ruta y las entregas ordenadas
     resultado = []
@@ -65,11 +106,25 @@ def obtener_mis_entregas(
                 Entrega.asignacion_id == asignacion.id
             ).order_by(Entrega.orden_entrega).all()
             
+            # Encontrar la próxima entrega pendiente
+            proxima_entrega = None
+            for entrega in entregas_ordenadas:
+                if entrega.estado == "pendiente":
+                    proxima_entrega = {
+                        "id_entrega": entrega.id_entrega,
+                        "orden_entrega": entrega.orden_entrega,
+                        "coordenadas_fin": entrega.coordenadas_fin,
+                        "cliente_id": entrega.cliente_id
+                    }
+                    break
+            
             # Construir el objeto de respuesta
             asignacion_data = {
                 "id": asignacion.id,
                 "fecha_asignacion": asignacion.fecha_asignacion,
                 "estado": asignacion.estado,
+                "ubicacion_actual": ubicacion_actual,
+                "proxima_entrega": proxima_entrega,
                 "ruta": {
                     "ruta_id": ruta.ruta_id,
                     "coordenadas_inicio": ruta.coordenadas_inicio,
@@ -880,12 +935,28 @@ def marcar_entrega_completada(
     # Si la entrega fue exitosa, reoptimizar las entregas pendientes restantes
     # usando la ubicación actual como nuevo punto de inicio
     entregas_reoptimizadas = False
+    ruta_actualizada = False
+    nuevas_coordenadas_inicio = None
+    
     if datos_entrega.estado == "entregado" and datos_entrega.coordenadas_fin:
         try:
             lat, lon = map(float, datos_entrega.coordenadas_fin.split(","))
             ultima_ubicacion = (lat, lon)
             _reoptimizar_entregas_pendientes(db, distribuidor_actual.id, ultima_ubicacion)
             entregas_reoptimizadas = True
+            
+            # Actualizar las coordenadas de inicio de la ruta para reflejar la nueva ubicación
+            ruta = db.query(RutaEntrega).filter(
+                RutaEntrega.ruta_id == entrega.ruta_id
+            ).first()
+            
+            if ruta:
+                # Actualizar coordenadas de inicio con la ubicación de la entrega completada
+                ruta.coordenadas_inicio = datos_entrega.coordenadas_fin
+                nuevas_coordenadas_inicio = datos_entrega.coordenadas_fin
+                ruta_actualizada = True
+                db.commit()
+                
         except (ValueError, TypeError):
             # Si hay error en las coordenadas, no reoptimizar
             pass
@@ -915,7 +986,9 @@ def marcar_entrega_completada(
         "distribuidor_estado": distribuidor_actual.estado,
         "todas_entregas_completadas": entregas_pendientes == 0,
         "estado_distribuidor_actualizado": estado_distribuidor_actualizado,
-        "entregas_reoptimizadas": entregas_reoptimizadas
+        "entregas_reoptimizadas": entregas_reoptimizadas,
+        "ruta_actualizada": ruta_actualizada,
+        "nuevas_coordenadas_inicio": nuevas_coordenadas_inicio
     }
 
 def _optimizar_orden_entregas(db: Session, pedidos_asignados: list, punto_inicio: tuple):
