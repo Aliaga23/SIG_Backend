@@ -216,14 +216,66 @@ def aceptar_asignacion(
             detail="Vehículo no encontrado"
         )
     
-    # Contar el número total de cajas en la asignación
-    entregas = db.query(Entrega).filter(
+    # Obtener los pedidos asignados a esta asignación
+    pedidos_asignados = db.query(PedidoAsignado).filter(
+        PedidoAsignado.asignacion_id == asignacion.id
+    ).all()
+    
+    if not pedidos_asignados:
+        raise HTTPException(
+            status_code=400,
+            detail="No hay pedidos asignados a esta asignación"
+        )
+    
+    # Verificar si ya existen entregas creadas
+    entregas_existentes = db.query(Entrega).filter(
         Entrega.asignacion_id == asignacion.id
     ).all()
     
     total_cajas = 0
     pedidos_info = []
     
+    # Si no existen entregas, crearlas basándose en los pedidos asignados
+    if not entregas_existentes:
+        # Obtener la ruta para crear las entregas
+        ruta = db.query(RutaEntrega).filter(
+            RutaEntrega.ruta_id == asignacion.ruta_id
+        ).first()
+        
+        if not ruta:
+            raise HTTPException(
+                status_code=400,
+                detail="No se encontró la ruta asociada a la asignación"
+            )
+        
+        # Crear entregas para cada pedido asignado
+        for orden, pedido_asignado in enumerate(pedidos_asignados, 1):
+            pedido = db.query(Pedido).filter(Pedido.id == pedido_asignado.pedido_id).first()
+            if pedido:
+                cliente = db.query(Cliente).filter(Cliente.id == pedido.cliente_id).first()
+                if cliente:
+                    # Crear la entrega
+                    nueva_entrega = Entrega(
+                        ruta_id=asignacion.ruta_id,
+                        cliente_id=cliente.id,
+                        pedido_id=pedido.id,
+                        asignacion_id=asignacion.id,
+                        coordenadas_fin=cliente.coordenadas,
+                        orden_entrega=orden,
+                        estado="pendiente"
+                    )
+                    db.add(nueva_entrega)
+        
+        db.commit()
+        
+        # Ahora obtener las entregas creadas
+        entregas = db.query(Entrega).filter(
+            Entrega.asignacion_id == asignacion.id
+        ).all()
+    else:
+        entregas = entregas_existentes
+    
+    # Calcular el total de cajas
     for entrega in entregas:
         if entrega.pedido_id:
             # Contar detalles del pedido (cada detalle es una caja)
