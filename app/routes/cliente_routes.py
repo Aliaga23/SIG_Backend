@@ -159,18 +159,10 @@ def obtener_mis_entregas(
                 ).order_by(Entrega.fecha_hora_reg.desc()).first()
                 
                 if ultima_entrega_completada and ultima_entrega_completada.coordenadas_fin:
-                    coords = ultima_entrega_completada.coordenadas_fin.split(",")
-                    if len(coords) == 2:
-                        ubicacion_distribuidor = {
-                            "latitud": float(coords[0]),
-                            "longitud": float(coords[1])
-                        }
+                    ubicacion_distribuidor = ultima_entrega_completada.coordenadas_fin
                 else:
                     # Si no tiene entregas completadas, usar su ubicación base
-                    ubicacion_distribuidor = {
-                        "latitud": float(distribuidor.latitud),
-                        "longitud": float(distribuidor.longitud)
-                    }
+                    ubicacion_distribuidor = f"{distribuidor.latitud},{distribuidor.longitud}"
         
         # Obtener información del pedido y productos
         pedido_info = None
