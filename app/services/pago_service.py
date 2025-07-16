@@ -49,6 +49,7 @@ def crear_sesion_stripe(monto: float, pedido_id: str):
     return session.url
 
 def procesar_webhook(event, db: Session):
+    # Manejar sesiones de checkout completadas
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         pedido_id = session["metadata"]["pedido_id"]
@@ -58,3 +59,32 @@ def procesar_webhook(event, db: Session):
             pago.transaccion_id = session["payment_intent"]
             db.commit()
             db.refresh(pago)
+    
+    # Manejar pagos completados mediante Payment Links (QR)
+    elif event["type"] == "payment_intent.succeeded":
+        payment_intent = event["data"]["object"]
+        # Obtener el pedido_id desde los metadatos del payment_intent
+        pedido_id = payment_intent.get("metadata", {}).get("pedido_id")
+        
+        if pedido_id:
+            pago = db.query(Pago).filter(Pago.pedido_id == UUID(pedido_id)).first()
+            if pago:
+                pago.estado = "pagado"
+                pago.transaccion_id = payment_intent["id"]
+                db.commit()
+                db.refresh(pago)
+                print(f"✅ Pago actualizado a 'pagado' para pedido {pedido_id}")
+    
+    # Manejar cuando se crea una sesión de Payment Link
+    elif event["type"] == "checkout.session.async_payment_succeeded":
+        session = event["data"]["object"]
+        pedido_id = session.get("metadata", {}).get("pedido_id")
+        
+        if pedido_id:
+            pago = db.query(Pago).filter(Pago.pedido_id == UUID(pedido_id)).first()
+            if pago:
+                pago.estado = "pagado"
+                pago.transaccion_id = session.get("payment_intent")
+                db.commit()
+                db.refresh(pago)
+                print(f"✅ Pago QR actualizado a 'pagado' para pedido {pedido_id}")
