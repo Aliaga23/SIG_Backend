@@ -152,17 +152,8 @@ def obtener_mis_entregas(
             
             # Si la entrega está pendiente, mostrar ubicación del distribuidor
             if entrega.estado == "pendiente" and distribuidor:
-                # Obtener la última entrega completada del distribuidor para saber su ubicación
-                ultima_entrega_completada = db.query(Entrega).join(AsignacionEntrega).filter(
-                    AsignacionEntrega.id_distribuidor == distribuidor.id,
-                    Entrega.estado == "entregado"
-                ).order_by(Entrega.fecha_hora_reg.desc()).first()
-                
-                if ultima_entrega_completada and ultima_entrega_completada.coordenadas_fin:
-                    ubicacion_distribuidor = ultima_entrega_completada.coordenadas_fin
-                else:
-                    # Si no tiene entregas completadas, usar su ubicación base
-                    ubicacion_distribuidor = f"{distribuidor.latitud},{distribuidor.longitud}"
+                # Usar siempre la ubicación actual del perfil del distribuidor
+                ubicacion_distribuidor = f"{distribuidor.latitud},{distribuidor.longitud}"
         
         # Obtener información del pedido y productos
         pedido_info = None
@@ -257,15 +248,8 @@ def seguimiento_entrega(
         
         # Obtener ubicación actual del distribuidor si la entrega está pendiente
         if entrega.estado == "pendiente" and distribuidor:
-            ultima_entrega_completada = db.query(Entrega).join(AsignacionEntrega).filter(
-                AsignacionEntrega.id_distribuidor == distribuidor.id,
-                Entrega.estado == "entregado"
-            ).order_by(Entrega.fecha_hora_reg.desc()).first()
-            
-            if ultima_entrega_completada and ultima_entrega_completada.coordenadas_fin:
-                ubicacion_distribuidor = ultima_entrega_completada.coordenadas_fin
-            else:
-                ubicacion_distribuidor = f"{distribuidor.latitud},{distribuidor.longitud}"
+            # Usar siempre la ubicación actual del perfil del distribuidor
+            ubicacion_distribuidor = f"{distribuidor.latitud},{distribuidor.longitud}"
     
     return {
         "entrega": {
